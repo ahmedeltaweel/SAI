@@ -3,19 +3,25 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"github.com/akamensky/argparse"
+	"github.com/gobwas/glob"
+	"github.com/m-motawea/aggregator"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
+	"strings"
+	"time"
 )
-
-func brodcastURL(url string) {
-	fmt.Printf("this is the url will be sent: %s", url)
-}
 
 type requestPayload struct {
 	HostName string `json:"host_name"`
+}
+
+type server struct {
+	HostNames []string
 }
 
 func logRequestPayload(requestionPayload requestPayload) {
@@ -41,15 +47,29 @@ func getRequestBody(request *http.Request) []byte {
 }
 
 func processRequest(r *http.Request, body []byte) {
-	fmt.Println(string(body[:]))
-	fmt.Println(r.URL.Host)
+	aggregator.RegsiterCall(*r, body, []byte{}, 200)
 }
 
-func serverHandler(w http.ResponseWriter, r *http.Request) {
+func knownURL(urls []string, host string) bool {
+	for i := 0; i < len(urls); i++ {
+		g := glob.MustCompile(urls[i])
+		if g.Match(host) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *server) serverHandler(w http.ResponseWriter, r *http.Request) {
 	requestPayload := parseRequest(r)
 	logRequestPayload(*requestPayload)
-	body := getRequestBody(r)
-	processRequest(r, body)
+	if knownURL(s.HostNames, r.Host) {
+		var body = []byte{}
+		if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+			body = getRequestBody(r)
+		}
+		processRequest(r, body)
+	}
 	httputil.NewSingleHostReverseProxy(&url.URL{
 		Scheme: "http",
 		Host:   requestPayload.HostName,
@@ -57,6 +77,20 @@ func serverHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	http.HandleFunc("/", serverHandler)
+	parser := argparse.NewParser("SAI", "Simple API inspector")
+	hostsList := parser.List("H", "hostname", &argparse.Options{Required: true, Help: "Enter URL list with globs"})
+	err := parser.Parse(os.Args)
+	if err != nil {
+		// In case of error print error and print usage
+		fmt.Print(parser.Usage(err))
+	}
+	s := server{*hostsList}
+	http.HandleFunc("/", s.serverHandler)
+	go func() {
+		for {
+			time.Sleep(time.Second * 10)
+			fmt.Println(string(aggregator.GetRaml()))
+		}
+	}()
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }
