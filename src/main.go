@@ -3,9 +3,6 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"github.com/akamensky/argparse"
-	"github.com/gobwas/glob"
-	"github.com/m-motawea/aggregator"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -14,6 +11,10 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/akamensky/argparse"
+	"github.com/gobwas/glob"
+	"github.com/m-motawea/aggregator"
 )
 
 type requestPayload struct {
@@ -22,6 +23,8 @@ type requestPayload struct {
 
 type server struct {
 	HostNames []string
+	target    *string
+	scheme    string
 }
 
 func logRequestPayload(requestionPayload requestPayload) {
@@ -70,21 +73,39 @@ func (s *server) serverHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		processRequest(r, body)
 	}
+	var host string
+	if s.target != nil {
+		host = *s.target
+	} else {
+		host = requestPayload.HostName
+	}
 	httputil.NewSingleHostReverseProxy(&url.URL{
-		Scheme: "http",
-		Host:   requestPayload.HostName,
+		Scheme: s.scheme,
+		Host:   host,
 	}).ServeHTTP(w, r)
 }
 
 func main() {
 	parser := argparse.NewParser("SAI", "Simple API inspector")
 	hostsList := parser.List("H", "hostname", &argparse.Options{Required: true, Help: "Enter URL list with globs"})
+	target := parser.String("t", "target", &argparse.Options{Required: false, Help: "Target for the requests (will proxy all requests to this endpoint"})
+	port := parser.Int("p", "port", &argparse.Options{Required: false, Help: "port", Default: 8080})
 	err := parser.Parse(os.Args)
 	if err != nil {
 		// In case of error print error and print usage
-		fmt.Print(parser.Usage(err))
+		panic(parser.Usage(err))
 	}
-	s := server{*hostsList}
+	var host *string
+	scheme := "http"
+	if target != nil {
+		u, err := url.Parse(*target)
+		if err != nil {
+			panic("target must be a valid url")
+		}
+		host = &u.Host
+		scheme = u.Scheme
+	}
+	s := server{*hostsList, host, scheme}
 	http.HandleFunc("/", s.serverHandler)
 	go func() {
 		for {
@@ -92,5 +113,5 @@ func main() {
 			fmt.Println(string(aggregator.GetRaml()))
 		}
 	}()
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", *port), nil))
 }
